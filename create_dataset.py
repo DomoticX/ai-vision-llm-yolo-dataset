@@ -22,6 +22,8 @@ import sys
 import json
 import time
 import base64
+import random
+import shutil
 import logging
 import requests
 from pathlib import Path
@@ -67,6 +69,11 @@ LABEL_TEXT_COLOR      = (0, 255, 0)    # RGB: label text colour (green)
 # --- NMS (Non-Maximum Suppression) settings ---
 IOU_THRESHOLD         = 0.80         # overlap threshold; boxes above this are merged
 NMS_MODE              = "per_label"  # "per_label" | "global" | "off"
+
+# --- Train / validation split ---
+VAL_SPLIT             = 0.20         # fraction of images moved to val after processing
+#                                      e.g. 0.20 = 80 % train / 20 % val
+#                                      set to 0.0 to skip the split entirely
 
 
 # ============================================================
@@ -493,6 +500,63 @@ def save_dataset_metadata(class_map: dict, output_dir: Path) -> None:
 
 
 # ============================================================
+# TRAIN / VALIDATION SPLIT
+# ============================================================
+
+def split_train_val(log: logging.Logger) -> dict:
+    """
+    Randomly move VAL_SPLIT fraction of labelled images from train → val.
+
+    Only images that:
+      - are currently in  images/train/
+      - have a matching   labels/train/<stem>.txt
+
+    are considered candidates.  Images already in images/val/ are never
+    touched, so re-running the script only splits newly added images.
+
+    Returns a summary dict with counts: { "moved": int, "total": int }.
+    """
+    if VAL_SPLIT <= 0.0:
+        log.info("VAL_SPLIT = 0.0 — skipping train/val split")
+        return {"moved": 0, "total": 0}
+
+    # Build candidate list: images with a corresponding label file
+    candidates = sorted([
+        img for img in IMAGES_TRAIN_DIR.iterdir()
+        if img.suffix.lower() in SUPPORTED_EXTENSIONS
+        and (LABELS_TRAIN_DIR / f"{img.stem}.txt").exists()
+    ])
+
+    total = len(candidates)
+    if total == 0:
+        log.warning("Train/val split: no labelled images found in train — skipping")
+        return {"moved": 0, "total": 0}
+
+    n_val = max(1, round(total * VAL_SPLIT))
+    random.shuffle(candidates)
+    val_candidates = candidates[:n_val]
+
+    pct_train = round((1 - VAL_SPLIT) * 100)
+    pct_val   = round(VAL_SPLIT * 100)
+    log.info(f"Train/val split {pct_train}/{pct_val}%  — "
+             f"moving {n_val} of {total} images to val")
+
+    for img_src in val_candidates:
+        stem    = img_src.stem
+        lbl_src = LABELS_TRAIN_DIR / f"{stem}.txt"
+        img_dst = IMAGES_VAL_DIR   / img_src.name
+        lbl_dst = LABELS_VAL_DIR   / f"{stem}.txt"
+
+        shutil.move(str(img_src), str(img_dst))
+        log.info(f"  → val  {img_src.name}")
+
+        if lbl_src.exists():
+            shutil.move(str(lbl_src), str(lbl_dst))
+
+    return {"moved": n_val, "total": total}
+
+
+# ============================================================
 # MAIN PIPELINE
 # ============================================================
 
@@ -617,14 +681,22 @@ def process_images() -> None:
                  f"detections: {len(detections)} | SUCCESS")
         stats["ok"] += 1
 
+    # ----- Train / val split -----
+    log.info("Running train/val split")
+    split_stats = split_train_val(log)
+
     # ----- Save dataset metadata -----
     log.info("Saving dataset metadata")
     save_dataset_metadata(class_map, DATASET_ROOT)
 
     # ----- Summary -----
+    n_train = stats["ok"] - split_stats["moved"]
+    n_val   = split_stats["moved"]
     log.info("=" * 60)
     log.info(f"Session finished  |  "
              f"ok: {stats['ok']}  skipped: {stats['skipped']}  errors: {stats['errors']}")
+    log.info(f"Split   : {n_train} train  /  {n_val} val  "
+             f"(VAL_SPLIT={VAL_SPLIT})")
     log.info(f"Classes : {list(class_map.keys())}")
     log.info(f"Dataset : {DATASET_ROOT.resolve()}")
     log.info(f"Log     : {Path(LOG_FILE).resolve()}")
