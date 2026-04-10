@@ -166,12 +166,12 @@ def encode_image_base64(image_path: Path) -> tuple[str, str]:
             raw = fh.read()
         mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
     else:
-        # Convert to JPEG in-memory so the API always receives a known format
+        # Convert to PNG in-memory (lossless) so the API always receives a known format
         buf = io.BytesIO()
         with Image.open(image_path) as img:
-            img.convert("RGB").save(buf, format="JPEG", quality=95)
+            img.convert("RGB").save(buf, format="PNG")
         raw  = buf.getvalue()
-        mime = "image/jpeg"
+        mime = "image/png"
 
     return base64.b64encode(raw).decode("utf-8"), mime
 
