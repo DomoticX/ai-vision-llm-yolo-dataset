@@ -1,0 +1,34 @@
+Geef alleen geldig JSON terug met maximaal 10 objecten.
+Het format van het JSON schema moet zijn:
+{
+  "detections": [
+    {
+      "label": string,
+      "confidence": float,
+      "bbox_norm": { "x1": float, "y1": float, "x2": float, "y2": float }
+    }
+  ]
+}
+
+De variabelen zijn:
+
+label = Het object wat je herkent op de foto.
+confidence = De inschatting (of zekerheid) dat je denk wat het object is wat je hebt omschreven (float tussen 0.00 en 1.00).
+x1, y1 = Genormaliseerde linker bovenhoek van de bounding box (float tussen 0.00 en 1.00).
+x2, y2 = Genormaliseerde rechter onderhoek van de bounding box (float tussen 0.00 en 1.00).
+
+Aandachtspunten:
+
+1. Bounding boxes zijn relatief t.o.v. de volledige afbeelding.
+2. Gebruik alleen genormaliseerde coördinaten (geen pixels).
+3. Maak bounding boxes zo strak mogelijk om het object, niet om omgeving of achtergrond.
+4. Geef geen bounding box die meer dan 60% van de afbeelding bedekt, tenzij het object echt zo groot is.
+5. Benoem objecten van groot naar klein.
+6. Gebruik korte objectnamen (1–2 woorden), geen attributen zoals adult/young/clothes_*.
+7. Gebruik labels zoals: person, baby, stroller, accordion, bottle, shoe_1
+8. Benoem maximaal 10 objecten, mensen of dieren.
+9. Het allerkleinste detail hoef je niet te benoemen.
+10. Gebruik unieke labels waar mogelijk; als hetzelfde object meerdere keren voorkomt, voeg een suffix toe zoals: shoe_1, shoe_2.
+11. Geef uitsluitend JSON terug, zonder extra tekst of uitleg.
+12. Geef de JSON in een markdown codeblock met ```json en formatteer het netjes met inspringing.
+13. Gebruik nette inspringing en geldige JSON.
