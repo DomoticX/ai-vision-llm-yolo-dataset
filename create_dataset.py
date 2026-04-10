@@ -56,9 +56,9 @@ LOG_FILE              = "dataset.log"            # written next to the script
 SUPPORTED_EXTENSIONS  = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 
 # --- Bounding box drawing settings ---
-BOX_COLOR             = (255, 255, 255)  # RGB: bounding box outline colour (white)
-BOX_THICKNESS         = 3               # outline thickness in pixels
-FONT_SIZE             = 16              # label font size in points
+BOX_COLOR             = (255, 0, 0)    # RGB: bounding box outline colour (white)
+BOX_THICKNESS         = 5              # outline thickness in pixels
+FONT_SIZE             = 16             # label font size in points
 LABEL_PADDING         = 3              # pixels of padding inside the label chip
 LABEL_BG_COLOR        = (0, 0, 0)      # RGB: label background colour (black)
 LABEL_BG_ALPHA        = 200            # 0–255: label background transparency
