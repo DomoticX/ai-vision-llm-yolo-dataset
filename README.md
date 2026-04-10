@@ -165,12 +165,19 @@ The LLM returns bounding boxes as two corner points (top-left and bottom-right).
 YOLO expects a center point plus width and height. The script converts automatically:
 
 ```
-LLM output (corner format)        YOLO format (center format)
-──────────────────────────        ───────────────────────────
-x1, y1  ← top-left corner         cx = (x1 + x2) / 2
-x2, y2  ← bottom-right corner     cy = (y1 + y2) / 2
-                                   w  = x2 - x1
-                                   h  = y2 - y1
+Corner format (LLM):              YOLO format (calculated):
+
+(x1,y1)──────────┐                ·         ·         ·
+  │               │                ·    (cx,cy)  ←  center point
+  │               │                ·         │         ·
+  └────────(x2,y2)                 ·        w×h        ·
+```
+
+```
+cx = (x1 + x2) / 2
+cy = (y1 + y2) / 2
+w  =  x2 - x1
+h  =  y2 - y1
 ```
 
 All four values stay normalised (0.0 – 1.0) — no pixel coordinates involved.
