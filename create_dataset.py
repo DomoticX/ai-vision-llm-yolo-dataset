@@ -20,10 +20,12 @@ import os
 import re
 import sys
 import json
+import time
 import base64
+import logging
 import requests
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 # ============================================================
 # CONFIGURATION  –  edit these values as needed
@@ -47,8 +49,11 @@ LABELS_TRAIN_DIR      = DATASET_ROOT / "labels" / "train"
 LABELS_VAL_DIR        = DATASET_ROOT / "labels" / "val"
 DEBUG_DIR             = DATASET_ROOT / "debug"   # JSON + annotated previews (overwritten on re-run)
 
-# --- Image formats to process ---
-SUPPORTED_EXTENSIONS  = (".jpg", ".jpeg", ".png")
+# --- Log file ---
+LOG_FILE              = "dataset.log"            # written next to the script
+
+# --- Image formats to process (all formats supported by YOLOv8) ---
+SUPPORTED_EXTENSIONS  = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 
 # --- Bounding box drawing settings ---
 BOX_COLOR             = (255, 255, 255)  # RGB: bounding box outline colour (white)
@@ -78,6 +83,56 @@ def create_folder_structure() -> None:
 
 
 # ============================================================
+# LOGGING
+# ============================================================
+
+def setup_logger() -> logging.Logger:
+    """
+    Configure a logger that writes to both the console and LOG_FILE.
+    The log file is appended to on every run so history is preserved.
+    Format:  2024-01-15 10:23:45 | INFO    | <message>
+    """
+    logger = logging.getLogger("dataset")
+    logger.setLevel(logging.DEBUG)
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    # File handler – append mode keeps history across multiple runs
+    fh = logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+
+    # Console handler – INFO and above only (keeps terminal readable)
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+
+def get_image_info(image_path: Path) -> dict:
+    """
+    Read basic metadata from an image file without fully decoding it.
+    Returns a dict with keys: file_size_kb, pil_format, resolution.
+    On failure returns safe fallback values.
+    """
+    info = {"file_size_kb": 0.0, "pil_format": "unknown", "resolution": "unknown"}
+    try:
+        info["file_size_kb"] = round(image_path.stat().st_size / 1024, 1)
+        with Image.open(image_path) as img:
+            info["pil_format"]  = img.format or image_path.suffix.upper().lstrip(".")
+            info["resolution"]  = f"{img.width}x{img.height}"
+    except Exception:
+        pass
+    return info
+
+
+# ============================================================
 # LLM  –  QUERY & PARSE
 # ============================================================
 
@@ -96,12 +151,16 @@ def encode_image_base64(image_path: Path) -> tuple[str, str]:
         b64 = base64.b64encode(fh.read()).decode("utf-8")
 
     ext = image_path.suffix.lower().lstrip(".")
-    if ext in ("jpg", "jpeg"):
-        mime = "image/jpeg"
-    elif ext == "png":
-        mime = "image/png"
-    else:
-        mime = "image/jpeg"   # safe fallback
+    mime_map = {
+        "jpg":  "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png":  "image/png",
+        "bmp":  "image/bmp",
+        "webp": "image/webp",
+        "tif":  "image/tiff",
+        "tiff": "image/tiff",
+    }
+    mime = mime_map.get(ext, "image/jpeg")  # safe fallback
 
     return b64, mime
 
@@ -435,20 +494,23 @@ def process_images() -> None:
       4. For each image: query LLM → save JSON → draw boxes → save YOLO .txt
       5. Write classes.txt + dataset.yaml
     """
+    log = setup_logger()
+    log.info("=" * 60)
+    log.info(f"Session started  |  model: {LM_STUDIO_MODEL}")
+    log.info("=" * 60)
 
     # ----- Step 1: Folder structure -----
-    print("\n=== Creating YOLO folder structure ===")
+    log.info("Creating YOLO folder structure")
     create_folder_structure()
 
     # ----- Step 2: System prompt -----
-    print(f"\n=== Loading system prompt from '{SYSTEM_PROMPT_FILE}' ===")
+    log.info(f"Loading system prompt from '{SYSTEM_PROMPT_FILE}'")
     if not os.path.isfile(SYSTEM_PROMPT_FILE):
-        print(f"[ERROR] '{SYSTEM_PROMPT_FILE}' not found. "
-              "Create the file and add your LLM prompt.")
+        log.error(f"'{SYSTEM_PROMPT_FILE}' not found — create the file and add your LLM prompt.")
         sys.exit(1)
 
     system_prompt = load_system_prompt(SYSTEM_PROMPT_FILE)
-    print(f"  [OK]   {len(system_prompt)} characters loaded.")
+    log.info(f"System prompt loaded ({len(system_prompt)} chars)")
 
     # ----- Step 3: Discover images -----
     image_files = sorted([
@@ -457,51 +519,75 @@ def process_images() -> None:
     ])
 
     if not image_files:
-        print(f"\n[WARNING] No images found in '{IMAGES_TRAIN_DIR}'.")
-        print("Place your source images there and re-run this script.")
+        log.warning(f"No images found in '{IMAGES_TRAIN_DIR}' — place source images there and re-run.")
         return
 
-    print(f"\n=== Found {len(image_files)} image(s) to process ===")
+    log.info(f"Found {len(image_files)} image(s) to process")
 
     class_map: dict[str, int] = {}   # label → class_id (accumulated over run)
+    stats = {"ok": 0, "skipped": 0, "errors": 0}
 
     # ----- Per-image loop -----
     for idx, image_path in enumerate(image_files, start=1):
-        stem = image_path.stem   # filename without extension
-        ext  = image_path.suffix
+        stem      = image_path.stem    # filename without extension
+        ext       = image_path.suffix
+        img_info  = get_image_info(image_path)
+        t_start   = time.time()
 
-        print(f"\n[{idx}/{len(image_files)}] {image_path.name}")
+        log.info(f"[{idx}/{len(image_files)}] {image_path.name} | "
+                 f"{img_info['file_size_kb']} KB | "
+                 f"{img_info['pil_format']} | "
+                 f"{img_info['resolution']}")
+
+        # --- Verify the image can actually be opened by Pillow ---
+        try:
+            with Image.open(image_path) as _probe:
+                _probe.verify()   # checks file integrity without full decode
+        except UnidentifiedImageError:
+            log.warning(f"  SKIP – unrecognised image format: {image_path.name} "
+                        "(Pillow cannot open it; your build may lack WEBP/TIFF support)")
+            stats["skipped"] += 1
+            continue
+        except Exception as exc:
+            log.warning(f"  SKIP – could not open image: {image_path.name} | {exc}")
+            stats["skipped"] += 1
+            continue
 
         # --- Query the Vision LLM ---
         try:
             raw_response = query_llm(image_path, system_prompt)
         except requests.RequestException as exc:
-            print(f"  [ERROR] LLM request failed: {exc}")
+            elapsed = time.time() - t_start
+            log.error(f"  LLM request failed | {image_path.name} | {elapsed:.1f}s | {exc}")
+            stats["errors"] += 1
             continue
 
         # --- Parse JSON from response ---
         try:
             parsed_json = parse_llm_response(raw_response)
         except (ValueError, json.JSONDecodeError) as exc:
-            print(f"  [ERROR] JSON parse failed: {exc}")
-            print(f"  [RAW]  {raw_response[:300]}")
+            elapsed = time.time() - t_start
+            log.error(f"  JSON parse failed | {image_path.name} | {elapsed:.1f}s | {exc}")
+            log.debug(f"  Raw response snippet: {raw_response[:300]}")
+            stats["errors"] += 1
             continue
 
         detections = parsed_json.get("detections") or []
-        print(f"  [LLM]  Received {len(detections)} detection(s)")
+        log.info(f"  LLM returned {len(detections)} detection(s)")
 
         # --- Save raw JSON to debug folder (overwritten on re-run) ---
         json_path = DEBUG_DIR / f"{stem}.json"
         with open(json_path, "w", encoding="utf-8") as fh:
             json.dump(parsed_json, fh, indent=2, ensure_ascii=False)
-        print(f"  [JSON] Debug JSON saved        → {json_path}")
+        log.info(f"  Debug JSON saved → {json_path}")
 
         # --- Draw bounding boxes and save preview to debug folder ---
         annotated_path = DEBUG_DIR / f"{stem}_lmm_vision{ext}"
         try:
             draw_bounding_boxes(image_path, detections, annotated_path)
+            log.info(f"  Annotated preview → {annotated_path}")
         except Exception as exc:
-            print(f"  [ERROR] Could not draw bounding boxes: {exc}")
+            log.warning(f"  Could not draw bounding boxes: {exc}")
 
         # --- Convert to YOLO format and save .txt ---
         update_class_map(detections, class_map)
@@ -512,17 +598,26 @@ def process_images() -> None:
             fh.write("\n".join(yolo_lines))
             if yolo_lines:
                 fh.write("\n")
-        print(f"  [YOLO] Label file saved        → {yolo_path}")
+
+        elapsed = time.time() - t_start
+        log.info(f"  YOLO label saved → {yolo_path}")
+        log.info(f"  Completed in {elapsed:.1f}s | "
+                 f"model: {LM_STUDIO_MODEL} | "
+                 f"detections: {len(detections)} | SUCCESS")
+        stats["ok"] += 1
 
     # ----- Save dataset metadata -----
-    print("\n=== Saving dataset metadata ===")
+    log.info("Saving dataset metadata")
     save_dataset_metadata(class_map, DATASET_ROOT)
 
     # ----- Summary -----
-    print(f"\n=== Done! ===")
-    print(f"  Processed : {len(image_files)} image(s)")
-    print(f"  Classes   : {list(class_map.keys())}")
-    print(f"  Dataset   : {DATASET_ROOT.resolve()}")
+    log.info("=" * 60)
+    log.info(f"Session finished  |  "
+             f"ok: {stats['ok']}  skipped: {stats['skipped']}  errors: {stats['errors']}")
+    log.info(f"Classes : {list(class_map.keys())}")
+    log.info(f"Dataset : {DATASET_ROOT.resolve()}")
+    log.info(f"Log     : {Path(LOG_FILE).resolve()}")
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":
