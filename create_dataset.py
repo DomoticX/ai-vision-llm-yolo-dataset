@@ -8,8 +8,8 @@ dataset/images/train/ by querying a local Vision LLM (LM Studio).
 Pipeline per image:
   1. Encode image as base64 and send to LM Studio Vision LLM
   2. Parse the JSON response (detections with normalized bbox corners)
-  3. Save raw JSON to  labels/train/<name>.json   (debug)
-  4. Draw bounding boxes on the image, save as <name>_lmm_vision.<ext>
+  3. Save raw JSON to  debug/<name>.json            (overwritten on re-run)
+  4. Draw bounding boxes on the image, save as debug/<name>_lmm_vision.<ext>
   5. Convert JSON → YOLO format, save to  labels/train/<name>.txt
   6. Write classes.txt + dataset.yaml to dataset/
 
@@ -45,15 +45,19 @@ IMAGES_TRAIN_DIR      = DATASET_ROOT / "images" / "train"
 IMAGES_VAL_DIR        = DATASET_ROOT / "images" / "val"
 LABELS_TRAIN_DIR      = DATASET_ROOT / "labels" / "train"
 LABELS_VAL_DIR        = DATASET_ROOT / "labels" / "val"
+DEBUG_DIR             = DATASET_ROOT / "debug"   # JSON + annotated previews (overwritten on re-run)
 
 # --- Image formats to process ---
 SUPPORTED_EXTENSIONS  = (".jpg", ".jpeg", ".png")
 
 # --- Bounding box drawing settings ---
-BOX_THICKNESS         = 3            # outline thickness in pixels
-FONT_SIZE             = 16
-LABEL_PADDING         = 3
-LABEL_ALPHA           = 200          # 0–255: label background transparency
+BOX_COLOR             = (255, 255, 255)  # RGB: bounding box outline colour (white)
+BOX_THICKNESS         = 3               # outline thickness in pixels
+FONT_SIZE             = 16              # label font size in points
+LABEL_PADDING         = 3              # pixels of padding inside the label chip
+LABEL_BG_COLOR        = (0, 0, 0)      # RGB: label background colour (black)
+LABEL_BG_ALPHA        = 200            # 0–255: label background transparency
+LABEL_TEXT_COLOR      = (0, 255, 0)    # RGB: label text colour (green)
 
 # --- NMS (Non-Maximum Suppression) settings ---
 IOU_THRESHOLD         = 0.80         # overlap threshold; boxes above this are merged
@@ -67,7 +71,8 @@ NMS_MODE              = "per_label"  # "per_label" | "global" | "off"
 def create_folder_structure() -> None:
     """Create the standard YOLO dataset folder structure if not yet present."""
     for directory in [IMAGES_TRAIN_DIR, IMAGES_VAL_DIR,
-                      LABELS_TRAIN_DIR, LABELS_VAL_DIR]:
+                      LABELS_TRAIN_DIR, LABELS_VAL_DIR,
+                      DEBUG_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
         print(f"  [DIR] {directory}")
 
@@ -297,11 +302,12 @@ def draw_bounding_boxes(image_path: Path, detections: list,
         x1, y1, x2, y2 = det["_box"]
         txt = f"{label} {conf:.2f}"
 
-        # Draw white bounding box outline (multi-pass for thickness)
+        # Draw bounding box outline (multi-pass for thickness)
+        box_rgba = (*BOX_COLOR, 255)
         for t in range(BOX_THICKNESS):
             draw.rectangle(
                 [x1 - t, y1 - t, x2 + t, y2 + t],
-                outline=(255, 255, 255, 255)
+                outline=box_rgba
             )
 
         # Compute label chip size
@@ -315,15 +321,15 @@ def draw_bounding_boxes(image_path: Path, detections: list,
         bx2 = clamp(x1 + tw + pad * 2, 0, W)
         by2 = clamp(by1 + th + pad * 2, 0, H)
 
-        # Semi-transparent black background chip
+        # Semi-transparent label background chip
         draw_ov.rectangle(
             [bx1, by1, bx2, by2],
-            fill=(0, 0, 0, LABEL_ALPHA)
+            fill=(*LABEL_BG_COLOR, LABEL_BG_ALPHA)
         )
-        # Green label text
+        # Label text
         draw_ov.text(
             (bx1 + pad, by1 + pad),
-            txt, font=font, fill=(0, 255, 0, 255)
+            txt, font=font, fill=(*LABEL_TEXT_COLOR, 255)
         )
 
     # Composite overlay onto image
@@ -445,11 +451,9 @@ def process_images() -> None:
     print(f"  [OK]   {len(system_prompt)} characters loaded.")
 
     # ----- Step 3: Discover images -----
-    # Exclude already-annotated _lmm_vision images
     image_files = sorted([
         f for f in IMAGES_TRAIN_DIR.iterdir()
         if f.suffix.lower() in SUPPORTED_EXTENSIONS
-        and "_lmm_vision" not in f.stem
     ])
 
     if not image_files:
@@ -486,14 +490,14 @@ def process_images() -> None:
         detections = parsed_json.get("detections") or []
         print(f"  [LLM]  Received {len(detections)} detection(s)")
 
-        # --- Save raw JSON (debug) ---
-        json_path = LABELS_TRAIN_DIR / f"{stem}.json"
+        # --- Save raw JSON to debug folder (overwritten on re-run) ---
+        json_path = DEBUG_DIR / f"{stem}.json"
         with open(json_path, "w", encoding="utf-8") as fh:
             json.dump(parsed_json, fh, indent=2, ensure_ascii=False)
         print(f"  [JSON] Debug JSON saved        → {json_path}")
 
-        # --- Draw bounding boxes on image ---
-        annotated_path = IMAGES_TRAIN_DIR / f"{stem}_lmm_vision{ext}"
+        # --- Draw bounding boxes and save preview to debug folder ---
+        annotated_path = DEBUG_DIR / f"{stem}_lmm_vision{ext}"
         try:
             draw_bounding_boxes(image_path, detections, annotated_path)
         except Exception as exc:
