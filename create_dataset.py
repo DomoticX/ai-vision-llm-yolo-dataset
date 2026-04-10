@@ -144,25 +144,36 @@ def load_system_prompt(filepath: str) -> str:
 
 def encode_image_base64(image_path: Path) -> tuple[str, str]:
     """
-    Encode image file to base64 string.
+    Encode image to base64 for the LM Studio API.
     Returns (base64_string, mime_type).
+
+    JPEG and PNG are sent as-is; all other formats (WEBP, BMP, TIFF, …)
+    are converted in-memory to JPEG first.  The LM Studio API rejects
+    formats like WEBP/BMP/TIFF with a 400 error even though the GUI
+    handles them fine — this conversion fixes that without touching the
+    original file on disk.
     """
-    with open(image_path, "rb") as fh:
-        b64 = base64.b64encode(fh.read()).decode("utf-8")
+    import io
 
-    ext = image_path.suffix.lower().lstrip(".")
-    mime_map = {
-        "jpg":  "image/jpeg",
-        "jpeg": "image/jpeg",
-        "png":  "image/png",
-        "bmp":  "image/bmp",
-        "webp": "image/webp",
-        "tif":  "image/tiff",
-        "tiff": "image/tiff",
-    }
-    mime = mime_map.get(ext, "image/jpeg")  # safe fallback
+    # Formats the API accepts natively
+    PASSTHROUGH = {".jpg", ".jpeg", ".png"}
 
-    return b64, mime
+    ext = image_path.suffix.lower()
+
+    if ext in PASSTHROUGH:
+        # Send original bytes directly
+        with open(image_path, "rb") as fh:
+            raw = fh.read()
+        mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+    else:
+        # Convert to PNG in-memory (lossless) so the API always receives a known format
+        buf = io.BytesIO()
+        with Image.open(image_path) as img:
+            img.convert("RGB").save(buf, format="PNG")
+        raw  = buf.getvalue()
+        mime = "image/png"
+
+    return base64.b64encode(raw).decode("utf-8"), mime
 
 
 def query_llm(image_path: Path, system_prompt: str) -> str:
