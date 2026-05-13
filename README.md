@@ -1,3 +1,5 @@
+![ai_vision_llm_yolo_dataset_generator_banner.jpg](ai_vision_llm_yolo_dataset_generator_banner.jpg)
+
 # AI Vision LLM YOLO Dataset
 
 Automatically generate YOLO-format training datasets from images using a **local Vision LLM** (LM Studio). No manual annotation tools like Roboflow or labelImg are required.
